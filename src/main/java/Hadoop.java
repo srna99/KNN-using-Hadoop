@@ -1,17 +1,16 @@
-import weka.core.AttributeStats;
 import weka.core.Instance;
 import weka.core.Instances;
 import weka.core.converters.ArffLoader.ArffReader;
 
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.FileReader;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.Set;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Scanner;
 
-import org.apache.commons.lang3.ArrayUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.ArrayWritable;
@@ -19,6 +18,7 @@ import org.apache.hadoop.io.DoubleWritable;
 import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.TwoDArrayWritable;
+import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.Mapper;
 import org.apache.hadoop.mapreduce.Reducer;
@@ -52,7 +52,6 @@ public class Hadoop {
 		private Instances testInstances;
 		private int testSize;
 		
-//		private TwoDArrayWritable outputMatrix = new TwoDArrayWritable(ArrayWritable.class);
 		private DoubleArrayWritable[][] classDistMatrix;
 		
 		@Override
@@ -69,8 +68,7 @@ public class Hadoop {
 			ArffReader arff = new ArffReader(reader);
 			
 			testInstances = arff.getData();
-			
-			System.out.println(k + ", " + testSize);
+			reader.close();
 			
 			classDistMatrix = new DoubleArrayWritable[testSize][k];
 			
@@ -78,18 +76,12 @@ public class Hadoop {
 				for(int j = 0; j < k; j++) {
 					DoubleWritable[] classDistPair = new DoubleWritable[2];
 					
-					classDistPair[0].set(-1.); //ERR
-					classDistPair[1].set(Double.MAX_VALUE); 
-					System.out.println(classDistPair);
+					classDistPair[0] = new DoubleWritable(-1);
+					classDistPair[1] = new DoubleWritable(Double.MAX_VALUE);
 					
-					classDistMatrix[i][j].set(classDistPair);
+					classDistMatrix[i][j] = new DoubleArrayWritable(classDistPair);
 				}
 			}
-			
-//			outputMatrix.set(classDistMatrix);
-			System.out.println("MAP SETUP: " + context.getTaskAttemptID().getTaskID().getId());
-			System.out.println(classDistMatrix);
-			System.out.println("1. " + classDistMatrix[0][0].get()[1].toString());
 		}
 
 		@Override
@@ -97,73 +89,65 @@ public class Hadoop {
 			if(value.toString().startsWith("@")) {
 				return;
 			}
-			System.out.println("MAP^2");
 			
-			try {
-				String[] valueTokens = value.toString().split(",");
-				int trainAttrSize = valueTokens.length;
-				System.out.println("1. " + trainAttrSize);
-				double[] trainInstance = new double[trainAttrSize];
-				for (int i = 0; i < trainAttrSize; i++) {
-					trainInstance[i] = Double.parseDouble(valueTokens[i]);
-				}
+			String[] valueTokens = value.toString().split(",");
+			int trainAttrSize = valueTokens.length;
+			
+			double[] trainInstance = new double[trainAttrSize];
+			
+			for (int i = 0; i < trainAttrSize; i++) {
+				trainInstance[i] = Double.parseDouble(valueTokens[i]);
+			}
+			
+			boolean newMinDistFound;
+			
+			for (int i = 0; i < testSize; i++) {
+				double[] testInstance = testInstances.get(i).toDoubleArray();
+				
+				double dist = calculateDistance(trainInstance, testInstance);
+				
 				DoubleWritable[] tempPair = new DoubleWritable[2];
-				boolean newMinDistFound;
-				for (int i = 0; i < testSize; i++) {
-					double[] testInstance = testInstances.get(i).toDoubleArray();
-					System.out.println("2. " + testInstance.length);
-					double dist = calculateDistance(trainInstance, testInstance);
-					System.out.println("3. " + dist);
-					newMinDistFound = false;
+				newMinDistFound = false;
 
-					for (int j = 0; j < k; j++) {
-						DoubleWritable[] classDistPair = (DoubleWritable[]) classDistMatrix[i][j].get();
+				for (int j = 0; j < k; j++) {
+					DoubleWritable[] classDistPair = (DoubleWritable[]) classDistMatrix[i][j].get();
 
-						if (!newMinDistFound) {
-							double currentNeighborDist = classDistPair[1].get();
-							System.out.println("4. " + currentNeighborDist);
-							if (dist < currentNeighborDist) {
-								newMinDistFound = true;
-								tempPair = classDistPair;
+					if (!newMinDistFound) {
+						double currentNeighborDist = classDistPair[1].get();
+						
+						if (dist < currentNeighborDist) {
+							newMinDistFound = true;
+							tempPair[0] = new DoubleWritable(classDistPair[0].get());
+							tempPair[1] = new DoubleWritable(classDistPair[1].get());
 
-								classDistPair[0].set(trainInstance[trainAttrSize - 1]);
-								classDistPair[1].set(dist);
+							classDistPair[0].set(trainInstance[trainAttrSize - 1]);
+							classDistPair[1].set(dist);
 
-								classDistMatrix[i][j].set(classDistPair);
-								System.out.println("5. " + classDistMatrix[i][j].get()[1].toString());
-							}
-						} else {
-							DoubleWritable[] anotherTemp = classDistPair;
-
-							classDistPair[0].set(tempPair[0].get());
-							classDistPair[1].set(tempPair[1].get());
-							
 							classDistMatrix[i][j].set(classDistPair);
-
-							tempPair = anotherTemp;
 						}
+					} else {
+						DoubleWritable[] anotherTemp = new DoubleWritable[2];
+						anotherTemp[0] = new DoubleWritable(classDistPair[0].get());
+						anotherTemp[1] = new DoubleWritable(classDistPair[1].get());
+						
+						classDistPair[0].set(tempPair[0].get());
+						classDistPair[1].set(tempPair[1].get());
+						
+						classDistMatrix[i][j].set(classDistPair);
+						
+						tempPair[0].set(anotherTemp[0].get());
+						tempPair[1].set(anotherTemp[1].get());
 					}
-				} 
-				System.out.println("6. " + classDistMatrix.length);
-			} catch (Exception e) {
-				System.err.println("MAP^2 ERR: " + e.getStackTrace());
+				}
 			}
 		}
 
 		@Override
 		protected void cleanup(Context context) throws IOException, InterruptedException {
-			try {
-				IntWritable outputKey = new IntWritable(context.getTaskAttemptID().getTaskID().getId());
-//				outputMatrix.set(classDistMatrix);
-				PairTwoDArrayWritable outputMatrix = new PairTwoDArrayWritable(classDistMatrix);
-				context.write(outputKey, outputMatrix);
-				DoubleArrayWritable d = (DoubleArrayWritable) outputMatrix.get()[0][0];
-				System.out.println("MAP CLEAN: " + outputKey);
-				System.out.println("1. " + d.get()[1].toString() + ", " + classDistMatrix[0][0].get()[1].toString());
-			} catch (Exception e) {
-				System.err.println("MAP CLEAN ERR: " + e.getStackTrace());
-			}
+			IntWritable outputKey = new IntWritable(context.getTaskAttemptID().getTaskID().getId());
+			PairTwoDArrayWritable outputMatrix = new PairTwoDArrayWritable(classDistMatrix);
 			
+			context.write(outputKey, outputMatrix);
 			
 			super.cleanup(context);
 		}
@@ -184,119 +168,108 @@ public class Hadoop {
 	public static class KnnReducer extends Reducer<IntWritable, PairTwoDArrayWritable, IntWritable, IntWritable> {
 		private int k;
 		private int testSize;
-//		private int numClasses;
 		
-		private ArrayWritable[][] finalClassDistMatrix;
-		private Set<Double> distinctClasses = new HashSet<Double>();
+		private double[][][] finalClassDistMatrix;
 		
 		@Override
 		protected void setup(Context context) throws IOException, InterruptedException {
-			try {
-				super.setup(context);
-				Configuration conf = context.getConfiguration();
-				k = conf.getInt("k", 0);
-				testSize = conf.getInt("testNumInstances", 0);
-//				numClasses = conf.getInt("numClasses", 0);
-				finalClassDistMatrix = new ArrayWritable[testSize][k];
-				for (int i = 0; i < testSize; i++) {
-					for (int j = 0; j < k; j++) {
-						DoubleWritable[] classDistPair = new DoubleWritable[2];
-
-						classDistPair[0].set(-1.);
-						classDistPair[1].set(Double.MAX_VALUE);
-
-						finalClassDistMatrix[i][j].set(classDistPair);
-					}
+			super.setup(context);
+			
+			Configuration conf = context.getConfiguration();
+			
+			k = conf.getInt("k", 0);
+			testSize = conf.getInt("testNumInstances", 0);
+			
+			finalClassDistMatrix = new double[testSize][k][2];
+			
+			for (int i = 0; i < testSize; i++) {
+				for (int j = 0; j < k; j++) {
+					finalClassDistMatrix[i][j][0] = -1;
+					finalClassDistMatrix[i][j][1] = Double.MAX_VALUE;
 				}
-				System.out.println("REDUCE SETUP: " + context.getTaskAttemptID().getTaskID().getId());
-			} catch (Exception e) {
-				System.err.println("REDUCE SETUP ERR: " + e.getStackTrace());
 			}
 		}
 		
 		@Override
 		protected void reduce(IntWritable key, Iterable<PairTwoDArrayWritable> value, Context context) throws IOException, InterruptedException {
-			System.out.println("REDUCE^2");
-			
-			try {
-				int testIndex = 0;
-				DoubleWritable[] tempPair = new DoubleWritable[2];
-				boolean newMinDistFound;
+			for (PairTwoDArrayWritable val : value) {
+				DoubleArrayWritable[][] matrix = new DoubleArrayWritable[testSize][k];
+				matrix = (DoubleArrayWritable[][]) val.toArray();
 				
-				for (PairTwoDArrayWritable val : value) {
-					System.out.println("1. " + testIndex);
-					ArrayWritable[][] row = (ArrayWritable[][]) val.get();
+				for(int i = 0; i < testSize; i++) {
+					double[] tempPair = new double[2];
 					
-					newMinDistFound = false;
+					for (int j = 0; j < k; j++) {
+						Writable[] currentClassDistPair = new Writable[2];
+						currentClassDistPair = matrix[i][j].get();
+						
+						double[] finalClassDistPair = finalClassDistMatrix[i][j];
+						
+						double currentDist = Double.parseDouble(currentClassDistPair[1].toString());
+						double finalDist = finalClassDistPair[1];
+						
+						if (currentDist < finalDist) {
+							tempPair[0] = finalClassDistPair[0];
+							tempPair[1] = finalClassDistPair[1];
 
-					for(int i = 0; i < testSize; i++) {
-						for (int j = 0; j < k; j++) {
-							DoubleWritable[] currentClassDistPair = (DoubleWritable[]) row[i][j].get();
-							DoubleWritable[] finalClassDistPair = (DoubleWritable[]) finalClassDistMatrix[i][j].get();
-							System.out.println("2. " + currentClassDistPair.length);
-							if (!newMinDistFound) {
-								double currentDist = currentClassDistPair[1].get();
-								double finalDist = finalClassDistPair[1].get();
-	
-								if (currentDist < finalDist) {
-									newMinDistFound = true;
-									tempPair = finalClassDistPair;
-	
-									finalClassDistPair[0].set(currentClassDistPair[0].get());
-									finalClassDistPair[1].set(currentDist);
-									System.out.println("3. " + tempPair[1]);
-									finalClassDistMatrix[i][j].set(finalClassDistPair);
-									
-									distinctClasses.add(currentClassDistPair[0].get());
-								}
-							} else {
-								DoubleWritable[] anotherTemp = finalClassDistPair;
-	
-								finalClassDistPair[0].set(tempPair[0].get());
-								finalClassDistPair[1].set(tempPair[1].get());
+							finalClassDistPair[0]= Double.parseDouble(currentClassDistPair[0].toString());
+							finalClassDistPair[1] = currentDist;
+							
+							finalClassDistMatrix[i][j] = finalClassDistPair;
+							
+							for(int m = j + 1; m < k; m++) {
+								double[] shiftPair = finalClassDistMatrix[i][m];
 								
-								finalClassDistMatrix[i][j].set(finalClassDistPair);
+								double[] anotherTemp = new double[2];
+								anotherTemp[0] = shiftPair[0];
+								anotherTemp[1] = shiftPair[1];
 								
-								System.out.println("4. " + anotherTemp[1]);
-								tempPair = anotherTemp;
+								shiftPair[0] = tempPair[0];
+								shiftPair[1] = tempPair[1];
+								
+								finalClassDistMatrix[i][m] = shiftPair;
+								
+								tempPair[0] = anotherTemp[0];
+								tempPair[1] = anotherTemp[1];
 							}
 						}
 					}
-
-					testIndex++;
-				} 
-			} catch (Exception e) {
-				System.err.println("REDUCE^2 ERR: " + e.getStackTrace());
-			}
+				}
+			} 
 		}
 
 		@Override
 		protected void cleanup(Context context) throws IOException, InterruptedException {
-			try {
-				for (int i = 0; i < testSize; i++) {
-					int[] classCounts = new int[distinctClasses.size()];
-					System.out.println("NumClasses: " + distinctClasses.size());
-					int predictedClass = -1;
-					int highestClassCount = 0;
-
-					for (int j = 0; j < k; j++) {
-						DoubleWritable[] classDistPair = (DoubleWritable[]) finalClassDistMatrix[i][j].get();
-						int currentClass = (int) classDistPair[0].get();
-
-						classCounts[currentClass]++;
-
-						if (classCounts[currentClass] > highestClassCount) {
-							predictedClass = currentClass;
-							highestClassCount = classCounts[currentClass];
-						}
+			for (int i = 0; i < testSize; i++) {
+				Map<Integer, Integer> classCounts = new HashMap<Integer, Integer>();
+				
+				for (int j = 0; j < k; j++) {
+					double[] classDistPair = finalClassDistMatrix[i][j];
+					int currentClass = (int) classDistPair[0];
+					
+					if(!classCounts.containsKey(currentClass)) {
+						classCounts.put(currentClass, 0);
+					} else {
+						classCounts.put(currentClass, classCounts.get(currentClass) + 1);
 					}
-
-					context.write(new IntWritable(i), new IntWritable(predictedClass));
 				}
-				System.out.println("REDUCE CLEAN: " + context.getTaskAttemptID().getTaskID().getId());
-			} catch (Exception e) {
-				System.err.println("REDUCE CLEAN ERR: " + e.getStackTrace());
+				
+				int predictedClass = -1;
+				int highestClassCount = 0;
+				
+				for (Map.Entry<Integer, Integer> entry : classCounts.entrySet()) {
+					int key = entry.getKey();
+					int val = entry.getValue();
+					
+					if(val > highestClassCount) {
+						predictedClass = key;
+						highestClassCount = val;
+					}
+				}
+				
+				context.write(new IntWritable(i), new IntWritable(predictedClass));
 			}
+			
 			super.cleanup(context);
 		}
 	}
@@ -313,31 +286,12 @@ public class Hadoop {
 		conf.setInt("k", Integer.parseInt(args[2]));
 		
 		String path = new File("").getAbsolutePath();
-//		System.out.println(path + ": " + path + System.getProperty("file.separator") + args[1]);
 		BufferedReader reader = new BufferedReader(new FileReader(path + System.getProperty("file.separator") + args[1]));
 		ArffReader arff = new ArffReader(reader);
 		Instances data = arff.getData();
-//		System.out.println(data.numInstances());
-		conf.setInt("testNumInstances", data.numInstances());
 		
-//		Instance inst;
-//		while ((inst = arff.readInstance(data)) != null) {
-//		   System.out.println(inst.attribute(0));
-//		}
-		
-//		BufferedReader reader2 = new BufferedReader(new FileReader(path + System.getProperty("file.separator") + args[0]));
-//		ArffReader arff2 = new ArffReader(reader2, 20);
-//		Instances data2 = arff2.getData();
-//		data2.setClassIndex(data2.numAttributes() - 1);
-//		
-//		AttributeStats as = data2.attributeStats(data2.numAttributes() - 1);
-//		conf.setInt("numClasses", as.distinctCount);
-//		System.out.println(as.distinctCount);
-////		data = arff.getData();
-//		Instance inst2;
-//		while ((inst2 = arff2.readInstance(data2)) != null) {
-//		   System.out.println(inst2.classValue());
-//		}
+		int numInstances = data.numInstances();
+		conf.setInt("testNumInstances", numInstances);
 		
 		Job job = Job.getInstance(conf, "knn");
 		job.setJarByClass(Hadoop.class);
@@ -353,7 +307,38 @@ public class Hadoop {
 		FileInputFormat.addInputPath(job, new Path(args[0]));
 		FileOutputFormat.setOutputPath(job, new Path(args[3]));
 		
-		System.exit(job.waitForCompletion(true) ? 0 : 1);
+		job.waitForCompletion(true);
+		
+		try {
+			File predictions = new File(path + System.getProperty("file.separator") + "predictions/part-r-00000");
+			Scanner sc = new Scanner(predictions);
+			
+			reader = new BufferedReader(new FileReader(path + System.getProperty("file.separator") + args[1]));
+			arff = new ArffReader(reader, 1000);
+			data = arff.getData();
+			data.setClassIndex(data.numAttributes() - 1);
+			
+			Instance inst;
+			int correct = 0;
+			
+			while(sc.hasNextLine() && (inst = arff.readInstance(data)) != null) {
+				sc.nextInt();
+				int prediction = sc.nextInt();
+				
+				int trueValue = (int) inst.classValue();
+				
+				if(prediction == trueValue) {
+					correct++;
+				}
+			}
+			sc.close();
+			reader.close();
+			
+			double accuracy = (correct * 1.0) / numInstances;
+			System.out.println(accuracy);
+		} catch (FileNotFoundException e) {
+			e.printStackTrace();
+		}
 	}
 	
 }
