@@ -307,7 +307,13 @@ public class Hadoop {
 		FileInputFormat.addInputPath(job, new Path(args[0]));
 		FileOutputFormat.setOutputPath(job, new Path(args[3]));
 		
+		long startTime = System.nanoTime();
+		
 		job.waitForCompletion(true);
+		
+		long endTime = System.nanoTime();
+
+		long milliseconds = (endTime - startTime) / 1000000;
 		
 		try {
 			File predictions = new File(path + System.getProperty("file.separator") + "predictions/part-r-00000");
@@ -335,7 +341,7 @@ public class Hadoop {
 			reader.close();
 			
 			double accuracy = (correct * 1.0) / numInstances;
-			System.out.println(accuracy);
+			System.out.println("It took " + milliseconds + " ms and results have an accuracy of " + accuracy);
 		} catch (FileNotFoundException e) {
 			e.printStackTrace();
 		}
